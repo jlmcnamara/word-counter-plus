@@ -24,15 +24,51 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   console.log("Context menu clicked:", info.menuItemId);
   
   if (info.menuItemId === "wordCounterPlus" && info.selectionText) {
-    console.log("Processing selected text:", info.selectionText.substring(0, 50) + "...");
-    
+    console.log("Processing selected text (context menu):", info.selectionText.substring(0, 50) + "...");
+    processSelection(info.selectionText, tab.id);
+  }
+});
+
+// Handle extension icon click
+chrome.action.onClicked.addListener((tab) => {
+  console.log("Extension icon clicked on tab:", tab.id);
+  // Inject a script to get the current selection
+  chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => window.getSelection().toString()
+  }).then(injectionResults => {
+    if (chrome.runtime.lastError) {
+        console.error("Error injecting script to get selection:", chrome.runtime.lastError.message);
+        return;
+    }
+    // executeScript returns an array of results, one for each frame injected into.
+    // We are only interested in the result from the main frame (index 0).
+    if (injectionResults && injectionResults[0] && injectionResults[0].result) {
+      const selectedText = injectionResults[0].result;
+      if (selectedText) {
+          console.log("Processing selected text (action click):", selectedText.substring(0, 50) + "...");
+          processSelection(selectedText, tab.id);
+      } else {
+          console.log("Action click: No text selected on the page.");
+          // Optional: Provide feedback to the user, e.g., a notification or changing the icon briefly
+      }
+    } else {
+         console.log("Action click: Could not retrieve selection.");
+    }
+  }).catch(err => {
+       console.error("Failed to execute script for selection:", err);
+  });
+});
+
+// Common function to process selection and show popup
+function processSelection(selectedText, tabId) {
     // Calculate stats in the background script
-    const stats = calculateEnhancedStats(info.selectionText);
+    const stats = calculateEnhancedStats(selectedText);
     console.log("Calculated stats:", stats);
     
     // Execute the showStatsPopup function directly in the current tab
     chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId: tabId },
       func: showEnhancedStatsPopup,
       args: [stats]
     }).then(() => {
@@ -42,7 +78,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
       
       // Fallback: Show a simple alert if popup fails
       chrome.scripting.executeScript({
-        target: { tabId: tab.id },
+        target: { tabId: tabId },
         func: (stats) => {
           alert(`Word Counter Plus Stats:\n\nWords: ${stats.wordCount}\nCharacters: ${stats.charCount}\nReadability: ${stats.readabilityScore}`);
         },
@@ -51,8 +87,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         console.error("Even alert fallback failed:", alertError);
       });
     });
-  }
-});
+}
 
 // --- Stop Words Set ---
 const stopWords = new Set([
@@ -149,14 +184,20 @@ function calculateEnhancedStats(text) {
     }
   });
   
-  // Top 10 unfiltered words
-  const topWords = Object.entries(wordFrequency)
+  // Filter out words that appear only once *before* sorting and slicing
+  const filterSingleOccurrences = (freqObject) => {
+      return Object.entries(freqObject)
+          .filter(([word, count]) => count > 1);
+  }
+
+  // Top 10 unfiltered words (occurring more than once)
+  const topWords = filterSingleOccurrences(wordFrequency)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
     .map(([word, count]) => ({ word, count }));
     
-  // Top 10 meaningful (filtered) words
-  const topMeaningfulWords = Object.entries(meaningfulWordFrequency)
+  // Top 10 meaningful (filtered) words (occurring more than once)
+  const topMeaningfulWords = filterSingleOccurrences(meaningfulWordFrequency)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
     .map(([word, count]) => ({ word, count }));
@@ -473,6 +514,9 @@ function showEnhancedStatsPopup(stats) {
       }
       .frequency-list-container {
         margin-bottom: 20px; /* Add space between the two lists */
+        max-height: 250px; /* Limit height */
+        overflow-y: auto; /* Add scrollbar if needed */
+        padding-right: 10px; /* Space for scrollbar */
       }
       .list-title {
         font-weight: 600;

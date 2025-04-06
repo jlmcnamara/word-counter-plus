@@ -54,6 +54,22 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
+// --- Stop Words Set ---
+const stopWords = new Set([
+  // Articles
+  'a', 'an', 'the', 
+  // Conjunctions
+  'and', 'but', 'or', 'so', 'for', 'nor', 'yet', 
+  // Prepositions
+  'in', 'on', 'at', 'to', 'from', 'with', 'by', 'about', 'above', 'across', 'after', 'against', 'along', 'among', 'around', 'before', 'behind', 'below', 'beneath', 'beside', 'between', 'beyond', 'during', 'inside', 'into', 'near', 'off', 'onto', 'out', 'outside', 'over', 'past', 'through', 'throughout', 'under', 'underneath', 'until', 'unto', 'up', 'upon', 'without',
+  // Pronouns
+  'i', 'me', 'my', 'myself', 'you', 'your', 'yours', 'yourself', 'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 'herself', 'it', 'its', 'itself', 'we', 'us', 'our', 'ours', 'ourselves', 'they', 'them', 'their', 'theirs', 'themselves', 'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 
+  // Auxiliary Verbs
+  'is', 'am', 'are', 'was', 'were', 'be', 'being', 'been', 'has', 'have', 'had', 'having', 'do', 'does', 'did', 'doing', 'will', 'would', 'shall', 'should', 'can', 'could', 'may', 'might', 'must', 
+  // Other common words
+  'not', 'of', 'no', 'yes', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 's', 't' // Common contractions parts
+]);
+
 // Calculate enhanced text statistics
 function calculateEnhancedStats(text) {
   // Basic stats
@@ -117,18 +133,32 @@ function calculateEnhancedStats(text) {
     readingTime = `${minutes} minute${minutes !== 1 ? 's' : ''} ${seconds} second${seconds !== 1 ? 's' : ''}`;
   }
   
-  // Word frequency (top 5)
+  // Word frequency (unfiltered & filtered)
   const wordFrequency = {};
+  const meaningfulWordFrequency = {};
   words.forEach(word => {
-    const cleanWord = word.toLowerCase().replace(/[^\w\s]/g, "");
+    const cleanWord = word.toLowerCase().replace(/[^\w]/g, ""); // Keep only word characters
     if (cleanWord.length > 0) {
+      // Unfiltered count
       wordFrequency[cleanWord] = (wordFrequency[cleanWord] || 0) + 1;
+      
+      // Filtered count (exclude stop words)
+      if (!stopWords.has(cleanWord)) {
+        meaningfulWordFrequency[cleanWord] = (meaningfulWordFrequency[cleanWord] || 0) + 1;
+      }
     }
   });
   
+  // Top 10 unfiltered words
   const topWords = Object.entries(wordFrequency)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
+    .slice(0, 10)
+    .map(([word, count]) => ({ word, count }));
+    
+  // Top 10 meaningful (filtered) words
+  const topMeaningfulWords = Object.entries(meaningfulWordFrequency)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
     .map(([word, count]) => ({ word, count }));
   
   // Character frequency (vowels vs consonants)
@@ -179,7 +209,8 @@ function calculateEnhancedStats(text) {
     readabilityScore,
     readingLevel,
     readingTime,
-    topWords,
+    topWords, // Unfiltered
+    topMeaningfulWords, // Filtered
     charFrequency,
     wordLengths
   };
@@ -234,21 +265,39 @@ function showEnhancedStatsPopup(stats) {
     distributionHTML += `<div class="chart-bar" style="height: ${height}px;" title="${count} word${count !== 1 ? 's' : ''} with ${i} character${i !== 1 ? 's' : ''}"></div>`;
   }
   
-  // Create HTML for top words
-  let topWordsHTML = '';
-  stats.topWords.forEach(({ word, count }) => {
-    const percentage = ((count / stats.wordCount) * 100).toFixed(1);
-    topWordsHTML += `
-      <div class="top-word">
-        <span class="word">${word}</span>
-        <div class="bar-container">
-          <div class="bar" style="width: ${percentage}%;"></div>
-          <span class="count">${count} (${percentage}%)</span>
-        </div>
-      </div>
-    `;
-  });
-  
+  // Helper function to create HTML for a word frequency list
+  const createWordListHTML = (wordList, totalWordCount, title) => {
+    let html = `<div class="frequency-list-container">
+                  <div class="stat-label list-title">${title}</div>`;
+    if (!wordList || wordList.length === 0) {
+      html += '<div style="color: #888; font-style: italic; margin-top: 5px;">No words to display.</div>';
+    } else {
+      const maxCount = wordList[0].count; // Get the max count for scaling bars within this list
+      wordList.forEach(({ word, count }) => {
+        const percentage = totalWordCount > 0 ? ((count / totalWordCount) * 100).toFixed(1) : 0;
+        // Scale bar width relative to the top word *in this list*
+        const barWidthPercentage = maxCount > 0 ? ((count / maxCount) * 100) : 0;
+        html += `
+          <div class="top-word">
+            <span class="word">${word}</span>
+            <div class="bar-container">
+              <div class="bar" style="width: ${barWidthPercentage}%;"></div>
+              <span class="count">${count} (${percentage}%)</span>
+            </div>
+          </div>
+        `;
+      });
+    }
+    html += `</div>`;
+    return html;
+  };
+
+  // Create HTML for top meaningful words
+  const topMeaningfulWordsHTML = createWordListHTML(stats.topMeaningfulWords, stats.wordCount, "Top Meaningful Words (Filtered)");
+
+  // Create HTML for top words overall
+  const topWordsHTML = createWordListHTML(stats.topWords, stats.wordCount, "Top Words (Overall)");
+
   // Create content for popup
   popup.innerHTML = `
     <style>
@@ -422,6 +471,53 @@ function showEnhancedStatsPopup(stats) {
         font-size: 11px;
         color: #333;
       }
+      .frequency-list-container {
+        margin-bottom: 20px; /* Add space between the two lists */
+      }
+      .list-title {
+        font-weight: 600;
+        margin-bottom: 10px;
+        border-bottom: 1px solid #eee;
+        padding-bottom: 5px;
+        color: #444;
+      }
+      .top-word {
+        display: flex;
+        align-items: center;
+        margin-bottom: 6px;
+        font-size: 13px;
+      }
+      .top-word .word {
+        flex: 0 0 100px; /* Fixed width for word */
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        color: #555;
+      }
+      .top-word .bar-container {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        margin-left: 10px;
+        background-color: #f0f0f0;
+        height: 16px;
+        border-radius: 3px;
+        position: relative;
+      }
+      .top-word .bar {
+        height: 100%;
+        background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
+        border-radius: 3px;
+        transition: width 0.3s ease-out;
+      }
+      .top-word .count {
+        font-size: 11px;
+        color: #666;
+        position: absolute; /* Position count inside or outside the bar */
+        right: 5px;
+        line-height: 16px; /* Align vertically */
+        /* Optionally hide if bar is too short? */
+      }
     </style>
     <div class="tabs">
       <div class="tab active" data-tab="basic">Basic</div>
@@ -529,8 +625,10 @@ function showEnhancedStatsPopup(stats) {
         </div>
       </div>
       <div class="divider"></div>
-      <div class="stat-label" style="margin-bottom: 15px;">Most Frequent Words</div>
-      ${topWordsHTML || '<div style="color: #666;">No word frequency data available</div>'}
+      <!-- Meaningful Words List -->
+      ${topMeaningfulWordsHTML}
+      <!-- Overall Words List -->
+      ${topWordsHTML}
     </div>
   `;
   

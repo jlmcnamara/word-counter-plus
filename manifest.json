@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Word Counter Plus",
-  "version": "1.0",
-  "description": "Provides a right click context menu to get stats on the selected text",
+  "version": "1.1",
+  "description": "Enhanced word counter with readability, frequency, and more.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -18,12 +18,25 @@
   "permissions": [
     "contextMenus",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "notifications"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [ "vendor/frappe-charts.min.iife.js" ],
+      "matches": [ "<all_urls>" ]
+    }
+  ]
 }

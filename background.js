@@ -370,6 +370,27 @@ function processTextOnPage(selectedText) {
     const gunningFogIndex = calculateGunningFog(text, wordCount, sentenceCount);
     const smogIndex = calculateSMOG(text, sentenceCount);
 
+    // Calculate word length distribution
+    const wordLengthCounts = {};
+    let maxWordLength = 0;
+    words.forEach(word => {
+      const len = word.length;
+      const count = (wordLengthCounts[len] || 0) + 1;
+      wordLengthCounts[len] = count;
+      if (len > maxWordLength) maxWordLength = len;
+    });
+
+    // Prepare data for histogram (fill gaps with 0)
+    const wordLengthData = [];
+    const wordLengthLabels = [];
+    let maxWordLengthCount = 0; // Find max count for scaling
+    for (let i = 1; i <= maxWordLength; i++) {
+      wordLengthLabels.push(i.toString());
+      const count = wordLengthCounts[i] || 0;
+      wordLengthData.push(count);
+      if (count > maxWordLengthCount) maxWordLengthCount = count;
+    }
+
     return {
       wordCount,
       charCount,
@@ -391,7 +412,10 @@ function processTextOnPage(selectedText) {
       // New stats for Structure tab
       complexWordCount,
       complexWordPercentage,
-      avgSyllablesPerWord
+      avgSyllablesPerWord,
+      wordLengthLabels,
+      wordLengthData,
+      maxWordLengthCount
     };
   }
 
@@ -458,17 +482,6 @@ function processTextOnPage(selectedText) {
          color: #333;
        }
 
-      #word-counter-plus-popup .tab-content {
-        padding: 15px;
-        display: none;
-        flex-grow: 1; /* Allow content to take space */
-        overflow-y: auto; /* Scroll if content overflows */
-      }
-
-      #word-counter-plus-popup .tab-content.active {
-        display: block;
-      }
-
       #word-counter-plus-popup .tabs {
         display: flex;
         border-bottom: 1px solid #e0e0e0; /* Light border */
@@ -495,6 +508,17 @@ function processTextOnPage(selectedText) {
         color: #007bff; /* Accent color for active tab */
         border-bottom-color: #007bff; /* Active indicator */
         background-color: #ffffff; /* White background for active tab content area */
+      }
+
+      #word-counter-plus-popup .tab-content {
+        display: none; /* Hide tab content by default */
+        padding: 15px 5px 5px 5px; /* Add some padding */
+        border-top: 1px solid #ddd;
+        margin-top: -1px; /* Overlap border with active tab bottom border */
+      }
+
+      #word-counter-plus-popup .tab-content.active {
+        display: block; /* Show active tab content */
       }
 
       #word-counter-plus-popup table {
@@ -568,6 +592,28 @@ function processTextOnPage(selectedText) {
           border: 1px solid #e0e0e0;
           border-radius: 4px;
           padding: 5px 10px;
+        }
+        #word-counter-plus-popup .chart-container {
+          margin-top: 20px;
+          height: auto; /* Allow height to adapt to content */
+          min-height: 30px; /* Prevent collapsing */
+          display: flex;
+          align-items: flex-end; /* Bars grow from bottom */
+          padding: 0 5px;
+          position: relative; /* For potential labels */
+        }
+ 
+        #word-counter-plus-popup .hist-bar {
+          background-color: #007bff; /* Bar color */
+          /* width is calculated dynamically */
+          margin: 0 2px; /* Spacing between bars */
+          transition: background-color 0.2s;
+          position: relative; /* Needed for potential pseudo-elements if adding labels directly */
+          flex-shrink: 0; /* Prevent bars from shrinking */
+        }
+
+        #word-counter-plus-popup .hist-bar:hover {
+          background-color: #0056b3; /* Darker on hover */
         }
     `;
 
@@ -713,12 +759,12 @@ function processTextOnPage(selectedText) {
             <td><strong>${stats.avgSyllablesPerWord}</strong></td>
           </tr>
            <tr>
-            <td>Complex Words (3+ syll):</td>
+            <td>Complex Words (3+ Syllables):</td>
             <td><strong>${stats.complexWordCount.toLocaleString()}</strong> (${stats.complexWordPercentage}%)</td>
           </tr>
         </table>
         <div style="font-size: 12px; color: #666; margin-top: 15px; line-height: 1.4;">
-          Complex words are often used in readability formulas (like Gunning Fog) to gauge text difficulty.
+          Complex words (3+ syllables) are a key factor in readability formulas.
         </div>
       </div>
 
@@ -748,6 +794,9 @@ function processTextOnPage(selectedText) {
             </div>
           `).join('') : '<div style="color: #888; font-style: italic; padding: 10px 0;">No significant words found.</div>'}
         </div>
+
+        <h4>Word Length Distribution:</h4>
+        <div id="word-length-chart" class="chart-container"></div>
       </div>
     `;
 
@@ -773,6 +822,42 @@ function processTextOnPage(selectedText) {
     document.getElementById("word-counter-close").addEventListener("click", () => {
       popup.remove();
     });
+
+    // --- Render Simple HTML/CSS Histogram --- 
+    const chartContainer = document.getElementById('word-length-chart');
+    if (chartContainer && stats.wordLengthData && stats.wordLengthData.length > 0 && stats.maxWordLengthCount > 0) {
+      // Clear any previous content (like error messages)
+      chartContainer.innerHTML = ''; 
+      
+      // Determine bar width based on container width and number of bars
+      const containerWidth = chartContainer.offsetWidth - (stats.wordLengthData.length * 4); // Subtract margin space
+      const barWidth = Math.max(5, Math.floor(containerWidth / stats.wordLengthData.length)); // Ensure min width
+      chartContainer.style.justifyContent = 'flex-start'; // Align bars to the start
+
+      stats.wordLengthData.forEach((count, index) => {
+        const bar = document.createElement('div');
+        bar.classList.add('hist-bar');
+        // Calculate height in pixels, capping at 60px
+        const maxPixelHeight = 60;
+        const barPixelHeight = Math.max(2, Math.min(maxPixelHeight, Math.round((count / stats.maxWordLengthCount) * maxPixelHeight))); // Min height 2px
+        bar.style.height = `${barPixelHeight}px`;
+        bar.style.width = `${barWidth}px`;
+        const wordLength = stats.wordLengthLabels[index];
+        bar.title = `${count} words of length ${wordLength}`;
+        chartContainer.appendChild(bar);
+      });
+        // Add simple labels (optional, can get crowded)
+        // const labelsContainer = document.createElement('div');
+        // labelsContainer.style.cssText = 'display: flex; justify-content: space-around; font-size: 0.7em; color: #666; margin-top: 3px;';
+        // stats.wordLengthLabels.forEach(label => {
+        //     const labelSpan = document.createElement('span');
+        //     labelSpan.textContent = label;
+        //     labelsContainer.appendChild(labelSpan);
+        // });
+        // chartContainer.insertAdjacentElement('afterend', labelsContainer); // Add labels after chart
+    } else if (chartContainer) {
+        chartContainer.innerHTML = '<p style="text-align: center; color: #888; font-size: 0.9em; padding-top: 20px;">Not enough data for chart.</p>';
+    }
 
     // Auto-close after 2 minutes (user can always close it sooner)
     setTimeout(() => {

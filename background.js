@@ -1,709 +1,650 @@
-// Create context menu item when extension is installed
+// Initialize context menu when extension is installed
 chrome.runtime.onInstalled.addListener(() => {
   console.log("Word Counter Plus extension installed");
-  
-  // Remove existing menu item if it exists (to prevent duplicates)
-  chrome.contextMenus.removeAll(() => {
-    // Create the context menu item
+  setupContextMenu();
+});
+
+// Set up the context menu item
+function setupContextMenu() {
+  try {
     chrome.contextMenus.create({
       id: "wordCounterPlus",
       title: "Word Counter Plus",
-      contexts: ["selection"]
-    }, () => {
-      if (chrome.runtime.lastError) {
-        console.error("Error creating context menu:", chrome.runtime.lastError);
-      } else {
-        console.log("Context menu created successfully");
-      }
+      contexts: ["selection", "page"]
     });
-  });
-});
+    console.log("Context menu created successfully");
+  } catch (error) {
+    console.error("Error creating context menu:", error);
+  }
+}
 
-// Handle context menu item click
+// Listen for clicks on the context menu item
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  console.log("Context menu clicked:", info.menuItemId);
-  
-  if (info.menuItemId === "wordCounterPlus" && info.selectionText) {
-    console.log("Processing selected text (context menu):", info.selectionText.substring(0, 50) + "...");
-    processSelection(info.selectionText, tab.id);
+  console.log("Context menu clicked", info, tab);
+  if (info.menuItemId === "wordCounterPlus") {
+    if (tab.url.startsWith("http")) {
+      try {
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          function: processTextOnPage,
+          args: [info.selectionText || ""]
+        });
+      } catch (error) {
+        console.error("Error executing script:", error);
+        showErrorNotification();
+      }
+    } else {
+      console.error("Cannot access non-HTTP URL:", tab.url);
+      showErrorNotification();
+    }
   }
 });
 
-// Handle extension icon click
+// Listen for clicks on the extension icon
 chrome.action.onClicked.addListener((tab) => {
-  console.log("Extension icon clicked on tab:", tab.id);
-  // Inject a script to get the current selection
-  chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: () => window.getSelection().toString()
-  }).then(injectionResults => {
-    if (chrome.runtime.lastError) {
-        console.error("Error injecting script to get selection:", chrome.runtime.lastError.message);
-        return;
+  console.log("Extension icon clicked", tab);
+  if (tab.url.startsWith("http")) {
+    try {
+      chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        function: processTextOnPage
+      });
+    } catch (error) {
+      console.error("Error executing script:", error);
+      showErrorNotification();
     }
-    // executeScript returns an array of results, one for each frame injected into.
-    // We are only interested in the result from the main frame (index 0).
-    if (injectionResults && injectionResults[0] && injectionResults[0].result) {
-      const selectedText = injectionResults[0].result;
-      if (selectedText) {
-          console.log("Processing selected text (action click):", selectedText.substring(0, 50) + "...");
-          processSelection(selectedText, tab.id);
-      } else {
-          console.log("Action click: No text selected on the page.");
-          // Optional: Provide feedback to the user, e.g., a notification or changing the icon briefly
-      }
-    } else {
-         console.log("Action click: Could not retrieve selection.");
-    }
-  }).catch(err => {
-       console.error("Failed to execute script for selection:", err);
-  });
+  } else {
+    console.error("Cannot access non-HTTP URL:", tab.url);
+    showErrorNotification();
+  }
 });
 
-// Common function to process selection and show popup
-function processSelection(selectedText, tabId) {
-    // Calculate stats in the background script
-    const stats = calculateEnhancedStats(selectedText);
-    console.log("Calculated stats:", stats);
+// Show an error notification
+function showErrorNotification() {
+  chrome.notifications.create({
+    type: "basic",
+    iconUrl: "icons/icon48.png",
+    title: "Word Counter Plus",
+    message: "This extension can only analyze content on regular web pages, not on browser URLs like chrome://."
+  });
+}
+
+// This function will be injected into the page
+function processTextOnPage(selectedText) {
+  // Create a set of stop words for text analysis
+  const stopWords = new Set([
+    // Articles
+    'a', 'an', 'the', 
+    // Conjunctions
+    'and', 'but', 'or', 'so', 'for', 'nor', 'yet', 
+    // Prepositions
+    'in', 'on', 'at', 'to', 'from', 'with', 'by', 'about', 'above', 'across', 'after', 'against', 'along',
+    'among', 'around', 'before', 'behind', 'below', 'beneath', 'beside', 'between', 'beyond', 'during',
+    'inside', 'into', 'near', 'off', 'onto', 'out', 'outside', 'over', 'past', 'through', 'throughout',
+    'under', 'underneath', 'until', 'unto', 'up', 'upon', 'without',
+    // Pronouns
+    'i', 'me', 'my', 'myself', 'you', 'your', 'yours', 'yourself', 'he', 'him', 'his', 'himself', 'she', 'her',
+    'hers', 'herself', 'it', 'its', 'itself', 'we', 'us', 'our', 'ours', 'ourselves', 'they', 'them', 'their',
+    'theirs', 'themselves', 'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 
+    // Auxiliary Verbs
+    'is', 'am', 'are', 'was', 'were', 'be', 'being', 'been', 'has', 'have', 'had', 'having', 'do', 'does',
+    'did', 'doing', 'will', 'would', 'shall', 'should', 'can', 'could', 'may', 'might', 'must', 
+    // Other common words
+    'not', 'of', 'no', 'yes', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such',
+    'only', 'own', 'same', 'so', 'than', 'too', 'very', 's', 't' // Common contractions parts
+  ]);
+
+  // Get the selected text or try to extract content if no selection
+  let textToProcess = selectedText || window.getSelection().toString();
+  
+  if (!textToProcess || textToProcess.trim().length === 0) {
+    console.log("No text selected, extracting main content");
+    textToProcess = getMainContent();
     
-    // Execute the showStatsPopup function directly in the current tab
-    chrome.scripting.executeScript({
-      target: { tabId: tabId },
-      func: showEnhancedStatsPopup,
-      args: [stats]
-    }).then(() => {
-      console.log("Stats popup displayed successfully");
-    }).catch(error => {
-      console.error("Error displaying stats popup:", error);
+    if (!textToProcess || textToProcess.trim().length === 0) {
+      console.log("Could not extract main content");
+      alert("Word Counter Plus: No text selected and couldn't extract content.");
+      return;
+    }
+  }
+  
+  // Calculate enhanced statistics and display in fancy popup
+  const stats = calculateEnhancedStats(textToProcess);
+  showEnhancedStatsPopup(stats);
+  
+  // Helper function to extract syllables from a word
+  function countSyllables(word) {
+    word = word.toLowerCase();
+    // Remove punctuation
+    word = word.replace(/[^a-z]/g, '');
+    
+    if (word.length <= 3) return 1;
+    
+    // Count vowel clusters as syllables
+    const vowelGroups = word.match(/[aeiouy]+/g);
+    let count = vowelGroups ? vowelGroups.length : 0;
+    
+    // Adjust for silent e at the end
+    if (word.endsWith('e') && word.length > 3) count--;
+    
+    // Ensure at least one syllable
+    return Math.max(1, count);
+  }
+  
+  // Helper function to count complex words (3+ syllables)
+  function countComplexWords(words) {
+    return words.filter(word => {
+      const normalized = word.toLowerCase().replace(/[^a-z]/g, '');
+      return normalized.length > 2 && countSyllables(normalized) >= 3;
+    }).length;
+  }
+  
+  // Calculate Flesch Reading Ease score
+  function calculateFleschReadingEase(text, wordCount, sentenceCount) {
+    const words = text.split(/\s+/).filter(w => w.match(/[a-zA-Z]/));
+    const syllableCount = words.reduce((sum, word) => sum + countSyllables(word), 0);
+    
+    if (wordCount === 0 || sentenceCount === 0) return 0;
+    
+    // Flesch Reading Ease = 206.835 - 1.015 * (words / sentences) - 84.6 * (syllables / words)
+    const score = 206.835 - 1.015 * (wordCount / sentenceCount) - 84.6 * (syllableCount / wordCount);
+    
+    return Math.min(100, Math.max(0, Math.round(score)));
+  }
+  
+  // Calculate Gunning Fog Index
+  function calculateGunningFog(text, wordCount, sentenceCount) {
+    const words = text.split(/\s+/).filter(w => w.match(/[a-zA-Z]/));
+    const complexWordsCount = countComplexWords(words);
+    
+    if (wordCount === 0 || sentenceCount === 0) return 0;
+    
+    // Gunning Fox Index = 0.4 * ((words / sentences) + 100 * (complex words / words))
+    const score = 0.4 * ((wordCount / sentenceCount) + 100 * (complexWordsCount / wordCount));
+    
+    return Math.round(score);
+  }
+  
+  // Calculate SMOG Grade
+  function calculateSMOG(text, sentenceCount) {
+    const words = text.split(/\s+/).filter(w => w.match(/[a-zA-Z]/));
+    const complexWordsCount = countComplexWords(words);
+    
+    if (sentenceCount < 30) {
+      // SMOG is designed for 30+ sentences, for fewer we'll use an approximation
+      const adjustedSentenceCount = Math.max(1, sentenceCount);
+      const scaleFactor = Math.sqrt(30 / adjustedSentenceCount);
+      const adjustedComplexCount = complexWordsCount * scaleFactor;
+      return Math.round(1.0430 * Math.sqrt(adjustedComplexCount * (30 / adjustedSentenceCount)) + 3.1291);
+    }
+    
+    // SMOG Grade = 1.0430 * sqrt(30 * (complex words / sentences)) + 3.1291
+    const score = 1.0430 * Math.sqrt(complexWordsCount * (30 / sentenceCount)) + 3.1291;
+    
+    return Math.round(score);
+  }
+  
+  // Extract main content from the page using improved algorithm
+  function getMainContent() {
+    // Multi-tier approach for content extraction
+    const selectors = [
+      // Highest priority: specific article containers
+      'article', 'main', '.article-content', '.post-content', '.entry-content', '.content-article',
       
-      // Fallback: Show a simple alert if popup fails
-      chrome.scripting.executeScript({
-        target: { tabId: tabId },
-        func: (stats) => {
-          alert(`Word Counter Plus Stats:\n\nWords: ${stats.wordCount}\nCharacters: ${stats.charCount}\nReadability: ${stats.readabilityScore}`);
-        },
-        args: [stats]
-      }).catch(alertError => {
-        console.error("Even alert fallback failed:", alertError);
+      // Medium priority: common content containers
+      '#content', '.content', '.main-content', '.page-content', '.post',
+      
+      // CNBC specific selectors (from your memory)
+      '.ArticleBody-articleBody', '.RenderKeyPoints-list', '.ArticleHeader-wrapper',
+      
+      // Lower priority: sections and divs that might contain content
+      'section', 'div[role="main"]', '.body', '.story',
+      
+      // Last resort
+      'body'
+    ];
+    
+    // Try to find the best content container
+    let bestElement = null;
+    let maxContentScore = 0;
+    
+    selectors.forEach(selector => {
+      const elements = document.querySelectorAll(selector);
+      
+      elements.forEach(el => {
+        // Skip invisible elements except body
+        if (el.offsetParent === null && selector !== 'body') return;
+        
+        // Get text content
+        const text = el.innerText || el.textContent || '';
+        if (!text || text.trim().length < 50) return; // Skip very small content
+        
+        // Score calculation: length is important but also quality
+        let score = text.trim().length;
+        
+        // Bonus for elements with significant text length
+        if (text.length > 1000) score *= 1.5;
+        
+        // Bonus for higher priority selectors
+        if (selector.includes('article') || selector.includes('content')) score *= 1.2;
+        
+        // Penalty for likely non-content elements
+        if (el.querySelectorAll('nav, header, footer, aside').length > 0) score *= 0.7;
+        if (el.querySelectorAll('iframe, .ad, .advertisement, .banner').length > 0) score *= 0.6;
+        
+        // Check if content is likely to be meaningful
+        const paragraphs = el.querySelectorAll('p');
+        if (paragraphs.length >= 3) score *= 1.3; // Bonus for multiple paragraphs
+        
+        if (score > maxContentScore) {
+          maxContentScore = score;
+          bestElement = el;
+        }
       });
     });
-}
-
-// --- Stop Words Set ---
-const stopWords = new Set([
-  // Articles
-  'a', 'an', 'the', 
-  // Conjunctions
-  'and', 'but', 'or', 'so', 'for', 'nor', 'yet', 
-  // Prepositions
-  'in', 'on', 'at', 'to', 'from', 'with', 'by', 'about', 'above', 'across', 'after', 'against', 'along', 'among', 'around', 'before', 'behind', 'below', 'beneath', 'beside', 'between', 'beyond', 'during', 'inside', 'into', 'near', 'off', 'onto', 'out', 'outside', 'over', 'past', 'through', 'throughout', 'under', 'underneath', 'until', 'unto', 'up', 'upon', 'without',
-  // Pronouns
-  'i', 'me', 'my', 'myself', 'you', 'your', 'yours', 'yourself', 'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 'herself', 'it', 'its', 'itself', 'we', 'us', 'our', 'ours', 'ourselves', 'they', 'them', 'their', 'theirs', 'themselves', 'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 
-  // Auxiliary Verbs
-  'is', 'am', 'are', 'was', 'were', 'be', 'being', 'been', 'has', 'have', 'had', 'having', 'do', 'does', 'did', 'doing', 'will', 'would', 'shall', 'should', 'can', 'could', 'may', 'might', 'must', 
-  // Other common words
-  'not', 'of', 'no', 'yes', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 's', 't' // Common contractions parts
-]);
-
-// Calculate enhanced text statistics
-function calculateEnhancedStats(text) {
-  // Basic stats
-  const trimmedText = text.trim();
-  const words = trimmedText.split(/\s+/);
-  const wordCount = words.length;
-  const charCount = trimmedText.length;
-  const charNoSpacesCount = trimmedText.replace(/\s/g, "").length;
-  
-  // Word length stats
-  let totalLength = 0;
-  let longestWord = "";
-  let wordLengths = [];
-  
-  words.forEach(word => {
-    // Remove punctuation for word length calculation
-    const cleanWord = word.replace(/[^\w\s]/g, "");
-    const length = cleanWord.length;
-    totalLength += length;
-    wordLengths.push(length);
     
-    if (length > longestWord.length) {
-      longestWord = cleanWord;
-    }
-  });
-  
-  const avgWordLength = wordCount > 0 ? (totalLength / wordCount).toFixed(1) : 0;
-  
-  // Sentence stats
-  const sentences = trimmedText.split(/[.!?]+/).filter(s => s.trim().length > 0);
-  const sentenceCount = sentences.length;
-  const avgWordsPerSentence = sentenceCount > 0 ? (wordCount / sentenceCount).toFixed(1) : 0;
-  
-  // Paragraph stats
-  const paragraphs = trimmedText.split(/\n\s*\n/).filter(p => p.trim().length > 0);
-  const paragraphCount = paragraphs.length || 1; // At least 1 paragraph
-  
-  // Readability (Flesch-Kincaid approximation)
-  // Formula: 206.835 - 1.015 * (words / sentences) - 84.6 * (syllables / words)
-  // We'll estimate syllables as word length / 3
-  const estimatedSyllables = totalLength / 3;
-  let readabilityScore = 0;
-  
-  if (sentenceCount > 0 && wordCount > 0) {
-    readabilityScore = Math.round(206.835 - 1.015 * (wordCount / sentenceCount) - 84.6 * (estimatedSyllables / wordCount));
-    // Clamp readability score between 0 and 100
-    readabilityScore = Math.max(0, Math.min(100, readabilityScore));
-  }
-  
-  // Reading time calculation (average reading speed: 200-250 words per minute)
-  const wpm = 225;
-  const readingTimeMinutes = wordCount / wpm;
-  const readingTimeSeconds = Math.round(readingTimeMinutes * 60);
-  let readingTime = "";
-  
-  if (readingTimeSeconds < 60) {
-    readingTime = `${readingTimeSeconds} second${readingTimeSeconds !== 1 ? 's' : ''}`;
-  } else {
-    const minutes = Math.floor(readingTimeMinutes);
-    const seconds = Math.round((readingTimeMinutes - minutes) * 60);
-    readingTime = `${minutes} minute${minutes !== 1 ? 's' : ''} ${seconds} second${seconds !== 1 ? 's' : ''}`;
-  }
-  
-  // Word frequency (unfiltered & filtered)
-  const wordFrequency = {};
-  const meaningfulWordFrequency = {};
-  words.forEach(word => {
-    const cleanWord = word.toLowerCase().replace(/[^\w]/g, ""); // Keep only word characters
-    if (cleanWord.length > 0) {
-      // Unfiltered count
-      wordFrequency[cleanWord] = (wordFrequency[cleanWord] || 0) + 1;
+    if (bestElement) {
+      // Clone to avoid modifying original page
+      const clone = bestElement.cloneNode(true);
       
-      // Filtered count (exclude stop words)
-      if (!stopWords.has(cleanWord)) {
-        meaningfulWordFrequency[cleanWord] = (meaningfulWordFrequency[cleanWord] || 0) + 1;
+      // Remove non-content elements
+      ['script', 'style', 'nav', 'header', 'footer', 'aside', '.ad', '.advertisement', '.banner', '.share'].forEach(selector => {
+        clone.querySelectorAll(selector).forEach(el => el.remove());
+      });
+      
+      return clone.innerText || clone.textContent || '';
+    }
+    return '';
+  }
+  
+  // Calculate enhanced statistics for the given text
+  function calculateEnhancedStats(text) {
+    // Basic word and character counts
+    const words = text.trim().split(/\s+/).filter(w => w.length > 0);
+    const wordCount = words.length;
+    const charCount = text.length;
+    const charNoSpacesCount = text.replace(/\s+/g, '').length;
+    
+    // Calculate average word length
+    const avgWordLength = wordCount > 0 ? (charNoSpacesCount / wordCount).toFixed(1) : 0;
+    
+    // Find longest word
+    let longestWord = '';
+    let longestWordLength = 0;
+    for (const word of words) {
+      const cleanWord = word.replace(/[^a-zA-Z]/g, '');
+      if (cleanWord.length > longestWordLength) {
+        longestWordLength = cleanWord.length;
+        longestWord = word;
       }
     }
-  });
-  
-  // Filter out words that appear only once *before* sorting and slicing
-  const filterSingleOccurrences = (freqObject) => {
-      return Object.entries(freqObject)
-          .filter(([word, count]) => count > 1);
-  }
-
-  // Top 10 unfiltered words (occurring more than once)
-  const topWords = filterSingleOccurrences(wordFrequency)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-    .map(([word, count]) => ({ word, count }));
     
-  // Top 10 meaningful (filtered) words (occurring more than once)
-  const topMeaningfulWords = filterSingleOccurrences(meaningfulWordFrequency)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-    .map(([word, count]) => ({ word, count }));
+    // Sentences and paragraphs
+    const sentences = text.split(/[.!?](?=[\s]|$)/).filter(s => s.trim().length > 0);
+    const sentenceCount = sentences.length;
+    const avgWordsPerSentence = sentenceCount > 0 ? (wordCount / sentenceCount).toFixed(1) : 0;
+    
+    const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+    const paragraphCount = paragraphs.length;
+    
+    // Unique words and frequency
+    const wordFrequency = {};
+    words.forEach(word => {
+      const normalized = word.toLowerCase().replace(/[^a-z']/g, '');
+      if (normalized.length > 0) {
+        wordFrequency[normalized] = (wordFrequency[normalized] || 0) + 1;
+      }
+    });
+    
+    const uniqueWordCount = Object.keys(wordFrequency).length;
+    
+    // Find most frequent words (excluding stop words)
+    const topWords = Object.entries(wordFrequency)
+      .filter(([word]) => !stopWords.has(word) && word.length > 1)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([word, freq]) => ({ word, frequency: freq }));
+    
+    // Check for nonsensical words (no vowels, very long, etc.)
+    const nonsensicalWords = words.filter(word => {
+      const normalized = word.toLowerCase().replace(/[^a-z']/g, '');
+      if (normalized.length <= 2) return false;
+      if (normalized.length > 20) return true; // Very long word
+      if (!/[aeiouy]/i.test(normalized)) return true; // No vowels
+      return false;
+    });
+    
+    const nonsensicalCount = nonsensicalWords.length;
+    const nonsensicalPercentage = (nonsensicalCount / wordCount * 100).toFixed(1);
+    
+    // Reading time (average 200-250 words per minute)
+    const readingTimeMinutes = (wordCount / 225).toFixed(1);
+    
+    // Calculate readability scores
+    const fleschReadingEase = calculateFleschReadingEase(text, wordCount, sentenceCount);
+    const gunningFogIndex = calculateGunningFog(text, wordCount, sentenceCount);
+    const smogIndex = calculateSMOG(text, sentenceCount);
+    
+    return {
+      wordCount,
+      charCount,
+      charNoSpacesCount,
+      sentenceCount,
+      paragraphCount,
+      avgWordLength,
+      avgWordsPerSentence,
+      longestWord,
+      longestWordLength,
+      uniqueWordCount,
+      topWords,
+      nonsensicalCount,
+      nonsensicalPercentage,
+      readingTimeMinutes,
+      fleschReadingEase,
+      gunningFogIndex,
+      smogIndex
+    };
+  }
   
-  // Character frequency (vowels vs consonants)
-  const charFrequency = {
-    vowels: 0,
-    consonants: 0,
-    numbers: 0,
-    symbols: 0
-  };
-  
-  const vowels = ['a', 'e', 'i', 'o', 'u'];
-  const alphaRegex = /[a-z]/i;
-  const numRegex = /[0-9]/;
-  
-  for (let i = 0; i < charNoSpacesCount; i++) {
-    const char = trimmedText[i].toLowerCase();
-    if (vowels.includes(char)) {
-      charFrequency.vowels++;
-    } else if (alphaRegex.test(char)) {
-      charFrequency.consonants++;
-    } else if (numRegex.test(char)) {
-      charFrequency.numbers++;
-    } else {
-      charFrequency.symbols++;
+  // Display the enhanced statistics in a tabbed popup
+  function showEnhancedStatsPopup(stats) {
+    // Remove any existing popup
+    const existingPopup = document.getElementById("word-counter-plus-popup");
+    if (existingPopup) {
+      existingPopup.remove();
     }
-  }
-  
-  // Reading level assessment
-  let readingLevel = '';
-  if (readabilityScore >= 90) readingLevel = 'Very Easy';
-  else if (readabilityScore >= 80) readingLevel = 'Easy';
-  else if (readabilityScore >= 70) readingLevel = 'Fairly Easy';
-  else if (readabilityScore >= 60) readingLevel = 'Standard';
-  else if (readabilityScore >= 50) readingLevel = 'Fairly Difficult';
-  else if (readabilityScore >= 30) readingLevel = 'Difficult';
-  else readingLevel = 'Very Difficult';
-  
-  return {
-    wordCount,
-    charCount,
-    charNoSpacesCount,
-    avgWordLength,
-    longestWord,
-    longestWordLength: longestWord.length,
-    sentenceCount,
-    avgWordsPerSentence,
-    paragraphCount,
-    readabilityScore,
-    readingLevel,
-    readingTime,
-    topWords, // Unfiltered
-    topMeaningfulWords, // Filtered
-    charFrequency,
-    wordLengths
-  };
-}
-
-// Function to display enhanced statistics in a popup (injected into the page)
-function showEnhancedStatsPopup(stats) {
-  // Remove any existing popup
-  const existingPopup = document.getElementById("word-counter-plus-popup");
-  if (existingPopup) {
-    existingPopup.remove();
-  }
-  
-  // Create popup element
-  const popup = document.createElement("div");
-  popup.id = "word-counter-plus-popup";
-  popup.style.cssText = `
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    z-index: 10000;
-    width: 360px;
-    border-radius: 12px;
-    overflow: hidden;
-    font-family: 'Segoe UI', 'Roboto', 'Arial', sans-serif;
-    font-size: 14px;
-    color: #333;
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.18);
-    animation: slideIn 0.4s cubic-bezier(0.19, 1, 0.22, 1);
-  `;
-  
-  // Get readability color based on score
-  const getReadabilityColor = (score) => {
-    if (score >= 80) return '#4CAF50'; // Green for easy
-    if (score >= 60) return '#2196F3'; // Blue for standard
-    if (score >= 40) return '#FF9800'; // Orange for moderate
-    return '#F44336'; // Red for difficult
-  };
-  
-  // Create word distribution chart data
-  const wordLengthDistribution = {};
-  stats.wordLengths.forEach(length => {
-    wordLengthDistribution[length] = (wordLengthDistribution[length] || 0) + 1;
-  });
-  
-  // Create HTML for the mini distribution chart
-  const maxFreq = Math.max(...Object.values(wordLengthDistribution));
-  let distributionHTML = '';
-  for (let i = 1; i <= Math.max(10, ...Object.keys(wordLengthDistribution).map(k => parseInt(k))); i++) {
-    const count = wordLengthDistribution[i] || 0;
-    const height = count ? Math.max(15, (count / maxFreq) * 60) : 5;
-    distributionHTML += `<div class="chart-bar" style="height: ${height}px;" title="${count} word${count !== 1 ? 's' : ''} with ${i} character${i !== 1 ? 's' : ''}"></div>`;
-  }
-  
-  // Helper function to create HTML for a word frequency list
-  const createWordListHTML = (wordList, totalWordCount, title) => {
-    let html = `<div class="frequency-list-container">
-                  <div class="stat-label list-title">${title}</div>`;
-    if (!wordList || wordList.length === 0) {
-      html += '<div style="color: #888; font-style: italic; margin-top: 5px;">No words to display.</div>';
-    } else {
-      const maxCount = wordList[0].count; // Get the max count for scaling bars within this list
-      wordList.forEach(({ word, count }) => {
-        const percentage = totalWordCount > 0 ? ((count / totalWordCount) * 100).toFixed(1) : 0;
-        // Scale bar width relative to the top word *in this list*
-        const barWidthPercentage = maxCount > 0 ? ((count / maxCount) * 100) : 0;
-        html += `
-          <div class="top-word">
-            <span class="word">${word}</span>
-            <div class="bar-container">
-              <div class="bar" style="width: ${barWidthPercentage}%;"></div>
-              <span class="count">${count} (${percentage}%)</span>
-            </div>
-          </div>
-        `;
-      });
-    }
-    html += `</div>`;
-    return html;
-  };
-
-  // Create HTML for top meaningful words
-  const topMeaningfulWordsHTML = createWordListHTML(stats.topMeaningfulWords, stats.wordCount, "Top Meaningful Words (Filtered)");
-
-  // Create HTML for top words overall
-  const topWordsHTML = createWordListHTML(stats.topWords, stats.wordCount, "Top Words (Overall)");
-
-  // Create content for popup
-  popup.innerHTML = `
-    <style>
-      @keyframes slideIn {
-        from { opacity: 0; transform: translateY(-20px); }
+    
+    // Create popup element
+    const popup = document.createElement("div");
+    popup.id = "word-counter-plus-popup";
+    popup.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 10000;
+      background-color: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+      width: 350px;
+      max-width: 90vw;
+      max-height: 90vh;
+      overflow: auto;
+      animation: wcpFadeIn 0.3s;
+    `;
+    
+    // Create CSS styles for the popup
+    const popupStyle = `
+      @keyframes wcpFadeIn {
+        from { opacity: 0; transform: translateY(-10px); }
         to { opacity: 1; transform: translateY(0); }
       }
-      .tab-content {
-        display: none;
-        padding: 20px;
-        background: #fff;
+      
+      #word-counter-plus-popup * {
+        box-sizing: border-box;
       }
-      .tab-content.active {
+      
+      #word-counter-plus-popup .tab-content {
+        padding: 15px;
+        display: none;
+      }
+      
+      #word-counter-plus-popup .tab-content.active {
         display: block;
       }
-      .tabs {
+      
+      #word-counter-plus-popup .tabs {
         display: flex;
-        background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%);
+        border-bottom: 1px solid #ddd;
       }
-      .tab {
-        padding: 15px 0;
-        flex: 1;
-        text-align: center;
-        color: rgba(255, 255, 255, 0.7);
+      
+      #word-counter-plus-popup .tab {
+        padding: 10px 15px;
         cursor: pointer;
-        transition: all 0.3s;
-        position: relative;
-        font-weight: 500;
+        background-color: #f5f5f5;
+        border-radius: 8px 8px 0 0;
+        margin-right: 2px;
+        transition: background-color 0.2s;
       }
-      .tab:hover {
-        color: rgba(255, 255, 255, 0.9);
+      
+      #word-counter-plus-popup .tab:hover {
+        background-color: #e5e5e5;
       }
-      .tab.active {
-        color: white;
+      
+      #word-counter-plus-popup .tab.active {
+        background-color: #fff;
+        border-bottom: 2px solid #3498db;
+        font-weight: bold;
       }
-      .tab.active::after {
-        content: '';
-        position: absolute;
-        bottom: 0;
-        left: 25%;
-        width: 50%;
-        height: 3px;
-        background: white;
-        border-radius: 3px 3px 0 0;
-      }
-      .stat-row {
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 12px;
-        align-items: center;
-      }
-      .stat-label {
-        color: #666;
-      }
-      .stat-value {
-        font-weight: 600;
-        color: #333;
-      }
-      .divider {
-        height: 1px;
-        background: #eee;
-        margin: 15px 0;
-      }
-      .readability-meter {
-        height: 8px;
+      
+      #word-counter-plus-popup table {
         width: 100%;
-        background: #eee;
-        border-radius: 4px;
-        margin-top: 5px;
-        overflow: hidden;
+        border-collapse: collapse;
       }
-      .readability-fill {
-        height: 100%;
-        width: ${stats.readabilityScore}%;
-        background: ${getReadabilityColor(stats.readabilityScore)};
-        border-radius: 4px;
+      
+      #word-counter-plus-popup td {
+        padding: 4px 0;
       }
-      .char-dist {
-        display: flex;
-        height: 60px;
-        align-items: flex-end;
-        margin-top: 15px;
-        border-bottom: 1px solid #eee;
+      
+      #word-counter-plus-popup td:last-child {
+        text-align: right;
       }
-      .chart-bar {
-        flex: 1;
-        background: #2196F3;
-        margin: 0 1px;
-        border-radius: 2px 2px 0 0;
-        min-height: 4px;
-      }
-      .char-labels {
-        display: flex;
-        margin-top: 5px;
-      }
-      .char-label {
-        flex: 1;
+      
+      #word-counter-plus-popup .readability-score {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        line-height: 20px;
         text-align: center;
-        font-size: 9px;
-        color: #999;
-      }
-      .close-btn {
-        position: absolute;
-        top: 14px;
-        right: 15px;
-        color: white;
-        background: none;
-        border: none;
-        font-size: 18px;
-        cursor: pointer;
-        opacity: 0.7;
-        transition: opacity 0.2s;
-      }
-      .close-btn:hover {
-        opacity: 1;
-      }
-      .pie-chart {
-        width: 100px;
-        height: 100px;
+        color: #fff;
         border-radius: 50%;
-        background: conic-gradient(
-          #4CAF50 0% ${(stats.charFrequency.vowels / stats.charNoSpacesCount) * 100}%, 
-          #2196F3 ${(stats.charFrequency.vowels / stats.charNoSpacesCount) * 100}% ${((stats.charFrequency.vowels + stats.charFrequency.consonants) / stats.charNoSpacesCount) * 100}%,
-          #FF9800 ${((stats.charFrequency.vowels + stats.charFrequency.consonants) / stats.charNoSpacesCount) * 100}% ${((stats.charFrequency.vowels + stats.charFrequency.consonants + stats.charFrequency.numbers) / stats.charNoSpacesCount) * 100}%,
-          #F44336 ${((stats.charFrequency.vowels + stats.charFrequency.consonants + stats.charFrequency.numbers) / stats.charNoSpacesCount) * 100}% 100%
-        );
-      }
-      .pie-legend {
-        display: flex;
-        flex-direction: column;
-        gap: 5px;
-        margin-left: 15px;
-      }
-      .legend-item {
-        display: flex;
-        align-items: center;
         font-size: 12px;
-      }
-      .legend-color {
-        width: 12px;
-        height: 12px;
-        border-radius: 2px;
         margin-right: 5px;
       }
-      .char-dist-container {
-        margin-top: 15px;
-      }
-      .top-word {
-        margin-bottom: 8px;
-      }
-      .word {
-        font-weight: 500;
-        display: block;
-        margin-bottom: 3px;
-      }
-      .bar-container {
-        height: 20px;
-        background: #f0f0f0;
-        border-radius: 4px;
-        position: relative;
-        overflow: hidden;
-      }
-      .bar {
-        height: 100%;
-        background: #2196F3;
-      }
-      .count {
-        position: absolute;
-        right: 8px;
-        top: 2px;
-        font-size: 11px;
-        color: #333;
-      }
-      .frequency-list-container {
-        margin-bottom: 20px; /* Add space between the two lists */
-        max-height: 250px; /* Limit height */
-        overflow-y: auto; /* Add scrollbar if needed */
-        padding-right: 10px; /* Space for scrollbar */
-      }
-      .list-title {
-        font-weight: 600;
-        margin-bottom: 10px;
+      
+      #word-counter-plus-popup .word-frequency {
+        display: flex;
+        justify-content: space-between;
+        padding: 4px 0;
         border-bottom: 1px solid #eee;
-        padding-bottom: 5px;
-        color: #444;
       }
-      .top-word {
-        display: flex;
-        align-items: center;
-        margin-bottom: 6px;
-        font-size: 13px;
+      
+      #word-counter-plus-popup .word {
+        font-weight: bold;
       }
-      .top-word .word {
-        flex: 0 0 100px; /* Fixed width for word */
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        color: #555;
-      }
-      .top-word .bar-container {
-        flex: 1;
-        display: flex;
-        align-items: center;
-        margin-left: 10px;
-        background-color: #f0f0f0;
-        height: 16px;
-        border-radius: 3px;
-        position: relative;
-      }
-      .top-word .bar {
-        height: 100%;
-        background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
-        border-radius: 3px;
-        transition: width 0.3s ease-out;
-      }
-      .top-word .count {
-        font-size: 11px;
+      
+      #word-counter-plus-popup .frequency {
         color: #666;
-        position: absolute; /* Position count inside or outside the bar */
-        right: 5px;
-        line-height: 16px; /* Align vertically */
-        /* Optionally hide if bar is too short? */
       }
-    </style>
-    <div class="tabs">
-      <div class="tab active" data-tab="basic">Basic</div>
-      <div class="tab" data-tab="readability">Readability</div>
-      <div class="tab" data-tab="frequency">Frequency</div>
-      <button class="close-btn">×</button>
-    </div>
+    `;
     
-    <!-- Basic Stats Tab -->
-    <div class="tab-content active" id="basic-tab">
-      <div class="stat-row">
-        <span class="stat-label">Words</span>
-        <span class="stat-value">${stats.wordCount.toLocaleString()}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Characters (with spaces)</span>
-        <span class="stat-value">${stats.charCount.toLocaleString()}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Characters (no spaces)</span>
-        <span class="stat-value">${stats.charNoSpacesCount.toLocaleString()}</span>
-      </div>
-      <div class="divider"></div>
-      <div class="stat-row">
-        <span class="stat-label">Sentences</span>
-        <span class="stat-value">${stats.sentenceCount.toLocaleString()}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Paragraphs</span>
-        <span class="stat-value">${stats.paragraphCount.toLocaleString()}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Reading Time</span>
-        <span class="stat-value">${stats.readingTime}</span>
-      </div>
-    </div>
+    // Convert readability score to color
+    function getReadabilityColor(score, type) {
+      if (type === 'flesch') {
+        if (score >= 90) return '#27ae60'; // Very easy - green
+        if (score >= 80) return '#2ecc71';
+        if (score >= 70) return '#f39c12'; // Fairly easy - yellow
+        if (score >= 60) return '#e67e22';
+        if (score >= 50) return '#d35400'; // Difficult - orange
+        return '#c0392b'; // Very difficult - red
+      } else {
+        // Lower grade level is easier (Gunning and SMOG)
+        if (score <= 6) return '#27ae60'; // Easy - green
+        if (score <= 9) return '#f39c12'; // Average - yellow
+        if (score <= 12) return '#e67e22'; // Difficult - orange
+        return '#c0392b'; // Very difficult - red
+      }
+    }
     
-    <!-- Readability Tab -->
-    <div class="tab-content" id="readability-tab">
-      <div class="stat-row">
-        <span class="stat-label">Readability Score</span>
-        <span class="stat-value" style="color: ${getReadabilityColor(stats.readabilityScore)}">
-          ${stats.readabilityScore}/100
-        </span>
+    // Create popup content with tabs
+    popup.innerHTML = `
+      <style>${popupStyle}</style>
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; border-bottom: 1px solid #eee;">
+        <h3 style="margin: 0; font-size: 16px; color: #333;">Word Counter Plus</h3>
+        <button id="word-counter-close" style="border: none; background: none; cursor: pointer; font-size: 20px; line-height: 1;">&times;</button>
       </div>
-      <div class="readability-meter">
-        <div class="readability-fill"></div>
+      
+      <div class="tabs">
+        <div class="tab active" data-tab="basic">Basic</div>
+        <div class="tab" data-tab="readability">Readability</div>
+        <div class="tab" data-tab="advanced">Advanced</div>
       </div>
-      <div class="stat-row" style="margin-top: 15px;">
-        <span class="stat-label">Reading Level</span>
-        <span class="stat-value">${stats.readingLevel}</span>
+      
+      <!-- Basic Stats Tab -->
+      <div id="basic-tab" class="tab-content active">
+        <table>
+          <tr>
+            <td>Words:</td>
+            <td><strong>${stats.wordCount.toLocaleString()}</strong></td>
+          </tr>
+          <tr>
+            <td>Characters (with spaces):</td>
+            <td><strong>${stats.charCount.toLocaleString()}</strong></td>
+          </tr>
+          <tr>
+            <td>Characters (no spaces):</td>
+            <td><strong>${stats.charNoSpacesCount.toLocaleString()}</strong></td>
+          </tr>
+          <tr>
+            <td>Sentences:</td>
+            <td><strong>${stats.sentenceCount.toLocaleString()}</strong></td>
+          </tr>
+          <tr>
+            <td>Paragraphs:</td>
+            <td><strong>${stats.paragraphCount.toLocaleString()}</strong></td>
+          </tr>
+          <tr>
+            <td>Reading time:</td>
+            <td><strong>${stats.readingTimeMinutes}</strong> minutes</td>
+          </tr>
+          <tr>
+            <td>Avg. word length:</td>
+            <td><strong>${stats.avgWordLength}</strong> characters</td>
+          </tr>
+          <tr>
+            <td>Avg. sentence length:</td>
+            <td><strong>${stats.avgWordsPerSentence}</strong> words</td>
+          </tr>
+        </table>
       </div>
-      <div class="divider"></div>
-      <div class="stat-row">
-        <span class="stat-label">Avg. Words per Sentence</span>
-        <span class="stat-value">${stats.avgWordsPerSentence}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Avg. Word Length</span>
-        <span class="stat-value">${stats.avgWordLength} characters</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Longest Word</span>
-        <span class="stat-value">${stats.longestWord} (${stats.longestWordLength})</span>
-      </div>
-      <div class="char-dist-container">
-        <div class="stat-label">Word Length Distribution</div>
-        <div class="char-dist">
-          ${distributionHTML}
-        </div>
-        <div class="char-labels">
-          ${Array.from({length: Math.min(10, Math.max(...Object.keys(wordLengthDistribution).map(k => parseInt(k))))}, (_, i) => 
-            `<div class="char-label">${i+1}</div>`
-          ).join('')}
-        </div>
-      </div>
-    </div>
-    
-    <!-- Frequency Tab -->
-    <div class="tab-content" id="frequency-tab">
-      <div class="stat-row" style="align-items: flex-start;">
-        <div>
-          <div class="stat-label" style="margin-bottom: 10px;">Character Types</div>
-          <div style="display: flex;">
-            <div class="pie-chart"></div>
-            <div class="pie-legend">
-              <div class="legend-item">
-                <div class="legend-color" style="background: #4CAF50;"></div>
-                <span>Vowels (${stats.charFrequency.vowels})</span>
+      
+      <!-- Readability Tab -->
+      <div id="readability-tab" class="tab-content">
+        <table>
+          <tr>
+            <td>
+              <span class="readability-score" style="background-color: ${getReadabilityColor(stats.fleschReadingEase, 'flesch')}">${Math.min(99, stats.fleschReadingEase)}</span>
+              Flesch Reading Ease:
+            </td>
+            <td>
+              <strong>${stats.fleschReadingEase}</strong>
+              <div style="font-size: 12px; color: #666;">
+                ${stats.fleschReadingEase >= 90 ? 'Very easy to read' :
+                 stats.fleschReadingEase >= 80 ? 'Easy to read' :
+                 stats.fleschReadingEase >= 70 ? 'Fairly easy to read' :
+                 stats.fleschReadingEase >= 60 ? 'Standard' :
+                 stats.fleschReadingEase >= 50 ? 'Fairly difficult' :
+                 stats.fleschReadingEase >= 30 ? 'Difficult' : 'Very difficult'}
               </div>
-              <div class="legend-item">
-                <div class="legend-color" style="background: #2196F3;"></div>
-                <span>Consonants (${stats.charFrequency.consonants})</span>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <span class="readability-score" style="background-color: ${getReadabilityColor(stats.gunningFogIndex, 'grade')}">${Math.min(stats.gunningFogIndex, 19)}</span>
+              Gunning Fog Index:
+            </td>
+            <td>
+              <strong>${stats.gunningFogIndex}</strong>
+              <div style="font-size: 12px; color: #666;">
+                ${stats.gunningFogIndex <= 6 ? 'Readable by 6th graders' :
+                 stats.gunningFogIndex <= 8 ? 'Readable by 8th graders' :
+                 stats.gunningFogIndex <= 10 ? 'Readable by high schoolers' :
+                 stats.gunningFogIndex <= 14 ? 'Readable by college students' :
+                 stats.gunningFogIndex <= 18 ? 'Readable by college graduates' : 'Advanced material'}
               </div>
-              <div class="legend-item">
-                <div class="legend-color" style="background: #FF9800;"></div>
-                <span>Numbers (${stats.charFrequency.numbers})</span>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <span class="readability-score" style="background-color: ${getReadabilityColor(stats.smogIndex, 'grade')}">${Math.min(stats.smogIndex, 19)}</span>
+              SMOG Index:
+            </td>
+            <td>
+              <strong>${stats.smogIndex}</strong>
+              <div style="font-size: 12px; color: #666;">
+                Years of education needed
               </div>
-              <div class="legend-item">
-                <div class="legend-color" style="background: #F44336;"></div>
-                <span>Symbols (${stats.charFrequency.symbols})</span>
+            </td>
+          </tr>
+          <tr><td colspan="2" style="padding-top: 10px; font-size: 12px; color: #666;">
+            <strong>Flesch Reading Ease</strong>: Higher scores (0-100) indicate easier-to-read text.<br>
+            <strong>Gunning Fog & SMOG</strong>: Estimated grade level needed to comprehend the text.
+          </td></tr>
+        </table>
+      </div>
+      
+      <!-- Advanced Tab -->
+      <div id="advanced-tab" class="tab-content">
+        <table>
+          <tr>
+            <td>Unique words:</td>
+            <td><strong>${stats.uniqueWordCount.toLocaleString()}</strong></td>
+          </tr>
+          <tr>
+            <td>Longest word:</td>
+            <td><strong>${stats.longestWord}</strong> (${stats.longestWordLength} chars)</td>
+          </tr>
+          <tr>
+            <td>Nonsensical words:</td>
+            <td><strong>${stats.nonsensicalPercentage}%</strong> (${stats.nonsensicalCount})</td>
+          </tr>
+        </table>
+        
+        <div style="margin-top: 10px;">
+          <strong>Top words:</strong>
+          <div style="max-height: 150px; overflow-y: auto; margin-top: 5px;">
+            ${stats.topWords.map(item => `
+              <div class="word-frequency">
+                <span class="word">${item.word}</span>
+                <span class="frequency">${item.frequency}x</span>
               </div>
-            </div>
+            `).join('')}
           </div>
         </div>
       </div>
-      <div class="divider"></div>
-      <!-- Meaningful Words List -->
-      ${topMeaningfulWordsHTML}
-      <!-- Overall Words List -->
-      ${topWordsHTML}
-    </div>
-  `;
-  
-  // Add popup to the page
-  document.body.appendChild(popup);
-  
-  // Add tab switching functionality
-  const tabs = popup.querySelectorAll('.tab');
-  const tabContents = popup.querySelectorAll('.tab-content');
-  
-  tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      // Deactivate all tabs
-      tabs.forEach(t => t.classList.remove('active'));
-      tabContents.forEach(tc => tc.classList.remove('active'));
-      
-      // Activate clicked tab
-      tab.classList.add('active');
-      document.getElementById(`${tab.dataset.tab}-tab`).classList.add('active');
+    `;
+    
+    // Add popup to page
+    document.body.appendChild(popup);
+    
+    // Add tab switching functionality
+    const tabs = popup.querySelectorAll('.tab');
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        // Update active tab
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        
+        // Update active content
+        const tabContents = popup.querySelectorAll('.tab-content');
+        tabContents.forEach(content => content.classList.remove('active'));
+        popup.querySelector(`#${tab.dataset.tab}-tab`).classList.add('active');
+      });
     });
-  });
-  
-  // Add close functionality
-  popup.querySelector('.close-btn').addEventListener('click', () => {
-    popup.remove();
-  });
-  
-  // Auto-close after 30 seconds (extended time for more detailed analysis)
-  setTimeout(() => {
-    if (document.getElementById("word-counter-plus-popup")) {
-      document.getElementById("word-counter-plus-popup").remove();
-    }
-  }, 30000);
+    
+    // Add close functionality
+    document.getElementById("word-counter-close").addEventListener("click", () => {
+      popup.remove();
+    });
+    
+    // Auto-close after 2 minutes (user can always close it sooner)
+    setTimeout(() => {
+      const currentPopup = document.getElementById("word-counter-plus-popup");
+      if (currentPopup) {
+        currentPopup.remove();
+      }
+    }, 120000);
+  }
 }
